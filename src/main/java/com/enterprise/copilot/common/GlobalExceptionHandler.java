@@ -8,9 +8,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -28,6 +30,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<Result<Void>> handleUnreadableBody() {
         return jsonError(HttpStatus.BAD_REQUEST, "请求体必须为有效 JSON");
+    }
+
+    @ExceptionHandler({HandlerMethodValidationException.class, MissingServletRequestParameterException.class})
+    public ResponseEntity<Result<Void>> handleInvalidParameters() {
+        return jsonError(HttpStatus.BAD_REQUEST, "请求参数缺失或格式无效");
     }
 
     @ExceptionHandler(ResponseStatusException.class)

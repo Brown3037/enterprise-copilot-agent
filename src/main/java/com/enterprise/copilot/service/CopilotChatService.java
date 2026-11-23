@@ -3,9 +3,11 @@ package com.enterprise.copilot.service;
 import com.enterprise.copilot.dto.ChatRequest;
 import com.enterprise.copilot.entity.ChatAuditLog;
 import com.enterprise.copilot.mapper.ChatAuditLogMapper;
+import com.enterprise.copilot.memory.RedisChatMemory;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -15,6 +17,8 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.concurrent.TimeUnit;
+
+import static org.springframework.ai.chat.client.advisor.AbstractChatMemoryAdvisor.CHAT_MEMORY_CONVERSATION_ID_KEY;
 
 @Slf4j
 @Service
@@ -65,12 +69,19 @@ public class CopilotChatService {
         if (!modelConfigured) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "模型 API Key 尚未配置");
         }
-        return chatClient.prompt().user(request.getMessage());
+        String conversationId = RedisChatMemory.conversationId(request.getUserId(), request.getSessionId());
+        return chatClient.prompt()
+                .user(request.getMessage())
+                .advisors(spec -> spec.param(CHAT_MEMORY_CONVERSATION_ID_KEY, conversationId));
     }
 
     private ResponseStatusException modelFailure(Throwable error) {
         if (error instanceof ResponseStatusException exception) {
             return exception;
+        }
+        if (error instanceof DataAccessException) {
+            log.warn("读取或写入会话记忆失败 | 异常类型={}", error.getClass().getSimpleName());
+            return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "会话记忆暂不可用，请稍后重试", error);
         }
         log.warn("模型调用失败 | 异常类型={}", error.getClass().getSimpleName());
         return new ResponseStatusException(HttpStatus.BAD_GATEWAY, "模型服务暂不可用，请稍后重试", error);
