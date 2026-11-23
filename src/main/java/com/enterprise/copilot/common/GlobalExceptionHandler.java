@@ -39,7 +39,10 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(ResponseStatusException.class)
     public ResponseEntity<Result<Void>> handleResponseStatus(ResponseStatusException exception) {
-        return jsonError(exception.getStatusCode(), exception.getBody().getDetail());
+        return ResponseEntity.status(exception.getStatusCode())
+                .headers(exception.getHeaders())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Result.error(exception.getStatusCode().value(), exception.getBody().getDetail()));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

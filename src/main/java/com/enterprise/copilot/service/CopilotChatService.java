@@ -6,6 +6,10 @@ import com.enterprise.copilot.dto.ChatRequest;
 import com.enterprise.copilot.entity.ChatAuditLog;
 import com.enterprise.copilot.mapper.ChatAuditLogMapper;
 import com.enterprise.copilot.memory.RedisChatMemory;
+import com.enterprise.copilot.security.PromptGuardrailService;
+import com.enterprise.copilot.security.PromptGuardrailService.RejectedPromptException;
+import com.enterprise.copilot.security.RateLimitExceededException;
+import com.enterprise.copilot.security.RedisRateLimiter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.tool.execution.ToolExecutionException;
@@ -32,14 +36,19 @@ public class CopilotChatService {
     private final ChatClient chatClient;
     private final ChatAuditLogMapper chatAuditLogMapper;
     private final KnowledgeBaseService knowledgeBaseService;
+    private final RedisRateLimiter redisRateLimiter;
+    private final PromptGuardrailService promptGuardrail;
     private final boolean modelConfigured;
 
     public CopilotChatService(ChatClient chatClient, ChatAuditLogMapper chatAuditLogMapper,
                               KnowledgeBaseService knowledgeBaseService,
+                              RedisRateLimiter redisRateLimiter, PromptGuardrailService promptGuardrail,
                               @Value("${spring.ai.openai.api-key}") String apiKey) {
         this.chatClient = chatClient;
         this.chatAuditLogMapper = chatAuditLogMapper;
         this.knowledgeBaseService = knowledgeBaseService;
+        this.redisRateLimiter = redisRateLimiter;
+        this.promptGuardrail = promptGuardrail;
         this.modelConfigured = StringUtils.hasText(apiKey) && !"sk-placeholder".equals(apiKey.strip());
     }
 
@@ -47,6 +56,7 @@ public class CopilotChatService {
         long startedAt = System.nanoTime();
         ToolTraceContext trace = new ToolTraceContext(request.getUserId());
         String reply = null;
+        RuntimeException failure = null;
         try {
             var prompt = preparePrompt(request, trace);
             String content = prompt.isPresent() ? prompt.get().call().content()
@@ -57,9 +67,10 @@ public class CopilotChatService {
             reply = content;
             return reply;
         } catch (RuntimeException error) {
+            failure = error;
             throw modelFailure(error);
         } finally {
-            saveAuditLog(request, reply, trace.finishAndGetTools(), elapsedMillis(startedAt));
+            saveAuditLog(request, reply, trace.finishAndGetTools(), elapsedMillis(startedAt), failure);
         }
     }
 
@@ -76,12 +87,14 @@ public class CopilotChatService {
                         .onErrorMap(this::modelFailure)
                         .map(chunk -> chunk.replace("\r\n", "\n").replace('\r', '\n'))
                         .doOnNext(audit.reply::append),
-                audit -> saveAuditLogAsync(request, audit.reply.toString(), audit),
-                (audit, error) -> saveAuditLogAsync(request, null, audit),
-                audit -> saveAuditLogAsync(request, null, audit));
+                audit -> saveAuditLogAsync(request, audit.reply.toString(), audit, null),
+                (audit, error) -> saveAuditLogAsync(request, null, audit, error),
+                audit -> saveAuditLogAsync(request, null, audit, null));
     }
 
     private Optional<ChatClient.ChatClientRequestSpec> preparePrompt(ChatRequest request, ToolTraceContext trace) {
+        redisRateLimiter.acquire(request.getUserId());
+        promptGuardrail.validateInput(request.getMessage());
         if (!modelConfigured) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "模型 API Key 尚未配置");
         }
@@ -116,18 +129,25 @@ public class CopilotChatService {
         return new ResponseStatusException(HttpStatus.BAD_GATEWAY, "模型服务暂不可用，请稍后重试", error);
     }
 
-    private Mono<Void> saveAuditLogAsync(ChatRequest request, String reply, StreamAudit audit) {
+    private Mono<Void> saveAuditLogAsync(ChatRequest request, String reply, StreamAudit audit, Throwable failure) {
         long latencyMs = elapsedMillis(audit.startedAt);
         String tools = audit.trace.finishAndGetTools();
-        return Mono.<Void>fromRunnable(() -> saveAuditLog(request, reply, tools, latencyMs))
+        if (failure instanceof RateLimitExceededException) {
+            return Mono.empty();
+        }
+        return Mono.<Void>fromRunnable(() -> saveAuditLog(request, reply, tools, latencyMs, failure))
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
-    private void saveAuditLog(ChatRequest request, String reply, String toolsInvoked, long latencyMs) {
+    private void saveAuditLog(ChatRequest request, String reply, String toolsInvoked, long latencyMs, Throwable failure) {
+        if (failure instanceof RateLimitExceededException) {
+            return;
+        }
         ChatAuditLog auditLog = new ChatAuditLog();
         auditLog.setSessionId(request.getSessionId());
         auditLog.setUserId(request.getUserId());
-        auditLog.setUserMessage(request.getMessage());
+        auditLog.setUserMessage(failure instanceof RejectedPromptException blocked
+                ? blocked.auditMarker() : request.getMessage());
         auditLog.setAssistantReply(reply);
         auditLog.setToolsInvoked(toolsInvoked);
         auditLog.setLatencyMs(latencyMs);

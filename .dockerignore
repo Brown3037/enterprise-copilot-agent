@@ -1,0 +1,9 @@
+.git
+.idea
+.rag-cache
+*.iml
+.env
+.env.*
+target
+out
+*.log

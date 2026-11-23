@@ -1,0 +1,65 @@
+services:
+  mysql:
+    image: mysql:8.0.45
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-copilot-dev-root}
+      MYSQL_DATABASE: enterprise_copilot
+      MYSQL_USER: ${MYSQL_USER:-copilot}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-copilot-dev-password}
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./src/main/resources/db/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          MYSQL_PWD="$$MYSQL_PASSWORD" mysql --protocol=TCP --host=127.0.0.1
+          --user="$$MYSQL_USER" --database="$$MYSQL_DATABASE" --batch
+          --execute='SELECT id FROM biz_order LIMIT 1'
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 35s
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: "jdbc:mysql://mysql:3306/enterprise_copilot?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=Asia/Shanghai&sslMode=DISABLED&allowPublicKeyRetrieval=true"
+      MYSQL_USER: ${MYSQL_USER:-copilot}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-copilot-dev-password}
+      SPRING_DATA_REDIS_HOST: redis
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-sk-placeholder}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+      KNOWLEDGE_POLICY_LOCATION: file:/app/policies/after_sales_policy.md
+      KNOWLEDGE_RELOAD_TOKEN: ${KNOWLEDGE_RELOAD_TOKEN:-}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_PATH: ${EMBEDDING_PATH:-/v1/embeddings}
+    ports:
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
+    volumes:
+      - knowledge_cache:/app/knowledge-cache
+      - ./src/main/resources/docs:/app/policies:ro
+
+volumes:
+  mysql_data:
+  redis_data:
+  knowledge_cache:
