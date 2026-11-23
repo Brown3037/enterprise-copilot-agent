@@ -1,11 +1,13 @@
 package com.enterprise.copilot.service;
 
+import com.enterprise.copilot.context.ToolTraceContext;
 import com.enterprise.copilot.dto.ChatRequest;
 import com.enterprise.copilot.entity.ChatAuditLog;
 import com.enterprise.copilot.mapper.ChatAuditLogMapper;
 import com.enterprise.copilot.memory.RedisChatMemory;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
@@ -16,6 +18,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.springframework.ai.chat.client.advisor.AbstractChatMemoryAdvisor.CHAT_MEMORY_CONVERSATION_ID_KEY;
@@ -37,9 +40,10 @@ public class CopilotChatService {
 
     public String chatSync(ChatRequest request) {
         long startedAt = System.nanoTime();
+        ToolTraceContext trace = new ToolTraceContext(request.getUserId());
         String reply = null;
         try {
-            String content = prompt(request).call().content();
+            String content = prompt(request, trace).call().content();
             if (!StringUtils.hasLength(content)) {
                 throw new IllegalStateException("模型未返回文本");
             }
@@ -48,36 +52,41 @@ public class CopilotChatService {
         } catch (RuntimeException error) {
             throw modelFailure(error);
         } finally {
-            saveAuditLog(request, reply, elapsedMillis(startedAt));
+            saveAuditLog(request, reply, trace.finishAndGetTools(), elapsedMillis(startedAt));
         }
     }
 
     public Flux<String> chatStream(ChatRequest request) {
         return Flux.usingWhen(
-                Mono.fromSupplier(StreamAudit::new),
-                audit -> Flux.defer(() -> prompt(request).stream().content())
+                Mono.fromSupplier(() -> new StreamAudit(request.getUserId())),
+                audit -> Flux.defer(() -> prompt(request, audit.trace).stream().content())
                         .switchIfEmpty(Mono.error(() -> new IllegalStateException("模型未返回文本")))
                         .onErrorMap(this::modelFailure)
                         .map(chunk -> chunk.replace("\r\n", "\n").replace('\r', '\n'))
                         .doOnNext(audit.reply::append),
-                audit -> saveAuditLogAsync(request, audit.reply.toString(), audit.startedAt),
-                (audit, error) -> saveAuditLogAsync(request, null, audit.startedAt),
-                audit -> saveAuditLogAsync(request, null, audit.startedAt));
+                audit -> saveAuditLogAsync(request, audit.reply.toString(), audit),
+                (audit, error) -> saveAuditLogAsync(request, null, audit),
+                audit -> saveAuditLogAsync(request, null, audit));
     }
 
-    private ChatClient.ChatClientRequestSpec prompt(ChatRequest request) {
+    private ChatClient.ChatClientRequestSpec prompt(ChatRequest request, ToolTraceContext trace) {
         if (!modelConfigured) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "模型 API Key 尚未配置");
         }
         String conversationId = RedisChatMemory.conversationId(request.getUserId(), request.getSessionId());
         return chatClient.prompt()
                 .user(request.getMessage())
-                .advisors(spec -> spec.param(CHAT_MEMORY_CONVERSATION_ID_KEY, conversationId));
+                .advisors(spec -> spec.param(CHAT_MEMORY_CONVERSATION_ID_KEY, conversationId))
+                .toolContext(Map.of(ToolTraceContext.CONTEXT_KEY, trace));
     }
 
     private ResponseStatusException modelFailure(Throwable error) {
         if (error instanceof ResponseStatusException exception) {
             return exception;
+        }
+        if (error instanceof ToolExecutionException) {
+            log.error("业务工具执行失败", error);
+            return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "业务工具暂不可用，请稍后重试", error);
         }
         if (error instanceof DataAccessException) {
             log.warn("读取或写入会话记忆失败 | 异常类型={}", error.getClass().getSimpleName());
@@ -87,19 +96,20 @@ public class CopilotChatService {
         return new ResponseStatusException(HttpStatus.BAD_GATEWAY, "模型服务暂不可用，请稍后重试", error);
     }
 
-    private Mono<Void> saveAuditLogAsync(ChatRequest request, String reply, long startedAt) {
-        long latencyMs = elapsedMillis(startedAt);
-        return Mono.<Void>fromRunnable(() -> saveAuditLog(request, reply, latencyMs))
+    private Mono<Void> saveAuditLogAsync(ChatRequest request, String reply, StreamAudit audit) {
+        long latencyMs = elapsedMillis(audit.startedAt);
+        String tools = audit.trace.finishAndGetTools();
+        return Mono.<Void>fromRunnable(() -> saveAuditLog(request, reply, tools, latencyMs))
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
-    private void saveAuditLog(ChatRequest request, String reply, long latencyMs) {
+    private void saveAuditLog(ChatRequest request, String reply, String toolsInvoked, long latencyMs) {
         ChatAuditLog auditLog = new ChatAuditLog();
         auditLog.setSessionId(request.getSessionId());
         auditLog.setUserId(request.getUserId());
         auditLog.setUserMessage(request.getMessage());
         auditLog.setAssistantReply(reply);
-        auditLog.setToolsInvoked("NONE");
+        auditLog.setToolsInvoked(toolsInvoked);
         auditLog.setLatencyMs(latencyMs);
         try {
             chatAuditLogMapper.insert(auditLog);
@@ -115,5 +125,10 @@ public class CopilotChatService {
     private static final class StreamAudit {
         private final long startedAt = System.nanoTime();
         private final StringBuilder reply = new StringBuilder();
+        private final ToolTraceContext trace;
+
+        private StreamAudit(String userId) {
+            trace = new ToolTraceContext(userId);
+        }
     }
 }

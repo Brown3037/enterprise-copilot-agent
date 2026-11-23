@@ -28,6 +28,8 @@ spring:
         options:
           model: ${DEEPSEEK_MODEL:deepseek-flash}
           temperature: 0.2
+          # DeepSeek can continue tool calls without reasoning_content in non-thinking mode.
+          reasoning-effort: none
 
 mybatis-plus:
   configuration:
