@@ -37,3 +37,14 @@ mybatis-plus:
   global-config:
     db-config:
       id-type: auto
+
+copilot:
+  knowledge:
+    policy: ${KNOWLEDGE_POLICY_LOCATION:classpath:docs/after_sales_policy.md}
+    cache-directory: ${KNOWLEDGE_CACHE_DIRECTORY:./.rag-cache}
+    reload-token: ${KNOWLEDGE_RELOAD_TOKEN:}
+    embedding:
+      base-url: ${EMBEDDING_BASE_URL:}
+      api-key: ${EMBEDDING_API_KEY:}
+      model: ${EMBEDDING_MODEL:}
+      path: ${EMBEDDING_PATH:/v1/embeddings}

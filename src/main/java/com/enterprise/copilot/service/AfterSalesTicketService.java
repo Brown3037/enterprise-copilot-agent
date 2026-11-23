@@ -25,6 +25,7 @@ public class AfterSalesTicketService {
 
     private final BizOrderMapper bizOrderMapper;
     private final ServiceTicketMapper serviceTicketMapper;
+    private final KnowledgeBaseService knowledgeBaseService;
 
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public String createTicket(String userId, String orderNo, String ticketType, String reason) {
@@ -50,6 +51,11 @@ public class AfterSalesTicketService {
                 return "创建工单失败：该订单有一条待核对工单，请联系人工客服。";
             }
             return "已有处理中的同类型工单，工单号：%s | 当前状态：待审核(OPEN)".formatted(existing.getTicketNo());
+        }
+
+        var restriction = knowledgeBaseService.ticketRestriction(order, ticketType);
+        if (restriction.isPresent()) {
+            return "创建工单失败：" + restriction.get();
         }
 
         ServiceTicket ticket = new ServiceTicket();

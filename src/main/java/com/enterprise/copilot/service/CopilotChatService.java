@@ -1,5 +1,6 @@
 package com.enterprise.copilot.service;
 
+import com.enterprise.copilot.config.ChatClientConfig;
 import com.enterprise.copilot.context.ToolTraceContext;
 import com.enterprise.copilot.dto.ChatRequest;
 import com.enterprise.copilot.entity.ChatAuditLog;
@@ -19,6 +20,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 import static org.springframework.ai.chat.client.advisor.AbstractChatMemoryAdvisor.CHAT_MEMORY_CONVERSATION_ID_KEY;
@@ -29,12 +31,15 @@ public class CopilotChatService {
 
     private final ChatClient chatClient;
     private final ChatAuditLogMapper chatAuditLogMapper;
+    private final KnowledgeBaseService knowledgeBaseService;
     private final boolean modelConfigured;
 
     public CopilotChatService(ChatClient chatClient, ChatAuditLogMapper chatAuditLogMapper,
+                              KnowledgeBaseService knowledgeBaseService,
                               @Value("${spring.ai.openai.api-key}") String apiKey) {
         this.chatClient = chatClient;
         this.chatAuditLogMapper = chatAuditLogMapper;
+        this.knowledgeBaseService = knowledgeBaseService;
         this.modelConfigured = StringUtils.hasText(apiKey) && !"sk-placeholder".equals(apiKey.strip());
     }
 
@@ -43,7 +48,9 @@ public class CopilotChatService {
         ToolTraceContext trace = new ToolTraceContext(request.getUserId());
         String reply = null;
         try {
-            String content = prompt(request, trace).call().content();
+            var prompt = preparePrompt(request, trace);
+            String content = prompt.isPresent() ? prompt.get().call().content()
+                    : KnowledgeBaseService.NO_POLICY_EVIDENCE;
             if (!StringUtils.hasLength(content)) {
                 throw new IllegalStateException("模型未返回文本");
             }
@@ -59,7 +66,12 @@ public class CopilotChatService {
     public Flux<String> chatStream(ChatRequest request) {
         return Flux.usingWhen(
                 Mono.fromSupplier(() -> new StreamAudit(request.getUserId())),
-                audit -> Flux.defer(() -> prompt(request, audit.trace).stream().content())
+                audit -> Flux.defer(() -> {
+                            var prompt = preparePrompt(request, audit.trace);
+                            return prompt.isPresent() ? prompt.get().stream().content()
+                                    : Flux.just(KnowledgeBaseService.NO_POLICY_EVIDENCE);
+                        })
+                        .subscribeOn(Schedulers.boundedElastic())
                         .switchIfEmpty(Mono.error(() -> new IllegalStateException("模型未返回文本")))
                         .onErrorMap(this::modelFailure)
                         .map(chunk -> chunk.replace("\r\n", "\n").replace('\r', '\n'))
@@ -69,15 +81,23 @@ public class CopilotChatService {
                 audit -> saveAuditLogAsync(request, null, audit));
     }
 
-    private ChatClient.ChatClientRequestSpec prompt(ChatRequest request, ToolTraceContext trace) {
+    private Optional<ChatClient.ChatClientRequestSpec> preparePrompt(ChatRequest request, ToolTraceContext trace) {
         if (!modelConfigured) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "模型 API Key 尚未配置");
         }
+        var policy = knowledgeBaseService.buildRagContext(request.getMessage(), request.getUserId());
+        if (policy.insufficient()) {
+            return Optional.empty();
+        }
         String conversationId = RedisChatMemory.conversationId(request.getUserId(), request.getSessionId());
-        return chatClient.prompt()
+        var prompt = chatClient.prompt()
                 .user(request.getMessage())
                 .advisors(spec -> spec.param(CHAT_MEMORY_CONVERSATION_ID_KEY, conversationId))
                 .toolContext(Map.of(ToolTraceContext.CONTEXT_KEY, trace));
+        if (!policy.evidence().isBlank()) {
+            prompt.system(ChatClientConfig.systemPromptWithPolicy(policy.evidence()));
+        }
+        return Optional.of(prompt);
     }
 
     private ResponseStatusException modelFailure(Throwable error) {
