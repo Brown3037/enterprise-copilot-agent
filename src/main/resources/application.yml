@@ -1,0 +1,37 @@
+server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: enterprise-copilot-agent
+
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:${MYSQL_PORT:3306}/enterprise_copilot?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=Asia/Shanghai&sslMode=DISABLED&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:}
+
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      database: 0
+      timeout: 3s
+
+  ai:
+    openai:
+      base-url: https://api.deepseek.com
+      # Phase 1 can start without a live model credential.
+      api-key: ${DEEPSEEK_API_KEY:sk-placeholder}
+      chat:
+        options:
+          model: ${DEEPSEEK_MODEL:deepseek-flash}
+          temperature: 0.2
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: auto
