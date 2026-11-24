@@ -26,6 +26,7 @@ import reactor.core.scheduler.Schedulers;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
+import java.util.List;
 
 @Configuration(proxyBeanMethods = false)
 public class ChatClientConfig {
@@ -49,7 +50,14 @@ public class ChatClientConfig {
     @Bean
     public ChatClient chatClient(ChatClient.Builder builder, RedisChatMemory memory, CustomerServiceTools tools,
                                  ObjectMapper objectMapper) {
-        var callbacks = Arrays.stream(CustomerServiceTools.class.getDeclaredMethods())
+        return builder.defaultSystem(DEFAULT_SYSTEM_PROMPT)
+                .defaultAdvisors(new RedisChatMemoryAdvisor(memory))
+                .defaultTools(customerServiceCallbacks(tools, objectMapper))
+                .build();
+    }
+
+    public static List<ToolCallback> customerServiceCallbacks(CustomerServiceTools tools, ObjectMapper objectMapper) {
+        return Arrays.stream(CustomerServiceTools.class.getDeclaredMethods())
                 .filter(method -> method.isAnnotationPresent(Tool.class))
                 .<ToolCallback>map(method -> MethodToolCallback.builder()
                         .toolObject(tools)
@@ -59,10 +67,6 @@ public class ChatClientConfig {
                         .toolCallResultConverter(ToolUtils.getToolCallResultConverter(method))
                         .build())
                 .toList();
-        return builder.defaultSystem(DEFAULT_SYSTEM_PROMPT)
-                .defaultAdvisors(new RedisChatMemoryAdvisor(memory))
-                .defaultTools(callbacks)
-                .build();
     }
 
     private static ToolDefinition publicToolDefinition(Method method, ObjectMapper objectMapper) {

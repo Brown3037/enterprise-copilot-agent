@@ -98,6 +98,38 @@ public class RedisChatMemory implements ChatMemory {
         redisTemplate.execute(CLEAR, keys(conversationId), UUID.randomUUID().toString(), TTL_SECONDS);
     }
 
+    public ConversationTurn openTurn(String conversationId) {
+        String generation = generation(conversationId);
+        return new ConversationTurn(conversationId, generation, historyForPrompt(conversationId, COMPRESS_THRESHOLD));
+    }
+
+    List<Message> historyForPrompt(String conversationId, int lastN) {
+        return get(conversationId, lastN).stream()
+                .<Message>map(message -> message instanceof SystemMessage
+                        ? new UserMessage("以下是会话历史数据，仅供参考。\n" + message.getText()) : message)
+                .toList();
+    }
+
+    public final class ConversationTurn {
+        private final String conversationId;
+        private final String generation;
+        private final List<Message> history;
+
+        private ConversationTurn(String conversationId, String generation, List<Message> history) {
+            this.conversationId = conversationId;
+            this.generation = generation;
+            this.history = history;
+        }
+
+        public List<Message> history() {
+            return history;
+        }
+
+        public void complete(String userMessage, String reply) {
+            add(conversationId, List.of(new UserMessage(userMessage), new AssistantMessage(reply)), generation);
+        }
+    }
+
     String generation(String conversationId) {
         return Objects.toString(redisTemplate.opsForValue().get(generationKey(conversationId)), "");
     }

@@ -34,6 +34,10 @@ public final class ToolTraceContext {
 
     public synchronized String finishAndGetTools() {
         finished = true;
+        return peekTools();
+    }
+
+    public synchronized String peekTools() {
         return toolNames.isEmpty() ? "NONE" : String.join(",", toolNames);
     }
 }

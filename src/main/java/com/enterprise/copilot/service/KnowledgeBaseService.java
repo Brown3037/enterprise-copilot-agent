@@ -69,17 +69,29 @@ public class KnowledgeBaseService {
         if (evidence.isEmpty()) {
             return new PolicyContext(true, "");
         }
-        String formatted = evidence.stream()
-                .map(hit -> citation(hit.metadata()) + " " + hit.content())
+        return new PolicyContext(true, formatEvidence(evidence));
+    }
+
+    public String buildWorkflowRagContext(String question, String userId, boolean listOrders) {
+        if (!listOrders) {
+            PolicyContext targeted = buildRagContext(question, userId);
+            return targeted.needsPolicy() ? targeted.evidence() : formatEvidence(retrieveRelevantPolicies(question));
+        }
+        List<BizOrder> ownedOrders = orders.selectList(Wrappers.<BizOrder>lambdaQuery()
+                        .select(BizOrder::getUserId, BizOrder::getProductName, BizOrder::getStatus)
+                        .eq(BizOrder::getUserId, userId))
+                .stream().filter(order -> userId.equals(order.getUserId())).toList();
+        // Use matching policy clauses for every represented order type and status in a batch.
+        return corpus.snapshot().rules().stream()
+                .filter(rule -> ownedOrders.stream().anyMatch(order -> matchesOrder(rule, order)))
+                .map(Rule::document).distinct()
+                .map(document -> citation(document.getMetadata()) + " " + document.getText())
                 .collect(Collectors.joining("\n\n"));
-        return new PolicyContext(true, formatted);
     }
 
     public Optional<String> ticketRestriction(BizOrder order, String ticketType) {
-        ProductFamily family = ProductFamily.forProduct(order.getProductName());
         Optional<Rule> matching = corpus.snapshot().rules().stream()
-                .filter(rule -> rule.family() == family && ticketType.equals(rule.ticketType()))
-                .filter(rule -> rule.orderStates().contains("ANY") || rule.orderStates().contains(order.getStatus()))
+                .filter(rule -> ticketType.equals(rule.ticketType()) && matchesOrder(rule, order))
                 .max(Comparator.comparing(Rule::decision));
         if (matching.isEmpty()) {
             return Optional.of("当前政策缺少适用的自助建单条款，请联系人工客服确认。");
@@ -92,6 +104,16 @@ public class KnowledgeBaseService {
             case DENY -> Optional.of("当前政策不支持该自助申请。依据 " + citation(rule.document().getMetadata())
                     + " " + rule.document().getText());
         };
+    }
+
+    private static boolean matchesOrder(Rule rule, BizOrder order) {
+        return rule.family() == ProductFamily.forProduct(order.getProductName())
+                && (rule.orderStates().contains("ANY") || rule.orderStates().contains(order.getStatus()));
+    }
+
+    private static String formatEvidence(List<PolicyHit> evidence) {
+        return evidence.stream().map(hit -> citation(hit.metadata()) + " " + hit.content())
+                .collect(Collectors.joining("\n\n"));
     }
 
     public ReloadResult reloadKnowledgeBase() {

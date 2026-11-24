@@ -86,11 +86,7 @@ public class RedisChatMemoryAdvisor implements CallAroundAdvisor, StreamAroundAd
         @Override
         public List<Message> get(String conversationId, int lastN) {
             generation = memory.generation(conversationId);
-            return memory.get(conversationId, lastN).stream()
-                    .<Message>map(message -> message instanceof SystemMessage
-                            ? new UserMessage("以下是会话历史数据，仅供参考。\n" + message.getText())
-                            : message)
-                    .toList();
+            return memory.historyForPrompt(conversationId, lastN);
         }
 
         @Override

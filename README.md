@@ -1,17 +1,28 @@
 # Enterprise Copilot Agent
 
-一个面向企业客服的 Java 21 / Spring Boot 3.4 后端。支持查询订单、按售后政策登记工单和 SSE 流式对话。MySQL 保存业务与审计数据，Redis 保存跨实例会话记忆和请求限流状态。
+一个面向企业客服的 Java 21 / Spring Boot 3.4 后端。支持查询订单、按售后政策登记工单、SSE 流式对话和多智能体业务编排。MySQL 保存业务与审计数据，Redis 保存跨实例会话记忆和请求限流状态。
 
 ## 架构
 
 ```mermaid
 flowchart LR
-    Client["客户端"] --> API["Spring MVC<br/>同步 JSON / SSE"]
+    Client["客户端"] --> API["Spring MVC<br/>同步 JSON / SSE / 多智能体"]
     API --> Guard["请求校验<br/>Redis + Lua 限流 / 提示词护栏"]
-    Guard --> RAG["售后政策检索<br/>Markdown → 分片 → 向量与关键词"]
-    RAG --> Agent["Spring AI ChatClient<br/>DeepSeek OpenAI 兼容接口"]
+    Guard -->|同步 / SSE| Agent["现有对话链路<br/>Spring AI ChatClient"]
+    Guard -->|multi-agent| Planner["Planner<br/>意图分流 / JSON 计划"]
+    Planner -->|简单请求| Agent
+    Planner -->|复杂任务| Executor["Executor<br/>按计划执行"]
+    Agent --> RAG["售后政策检索<br/>向量、关键词与订单规则"]
+    Executor --> RAG
+    Executor -->|草稿和实际工具结果| Critic["Critic<br/>独立复核"]
+    Critic -->|驳回一次| Revision["Executor 修订回复"]
+    Revision -->|再次复核| Critic
+    Critic -->|通过或达到反思上限| Final["结构化轨迹与最终回复"]
     Agent <--> Memory["Redis 会话记忆<br/>滑动窗口与摘要"]
+    Executor --> Memory
+    Final --> Memory
     Agent <--> Tools["业务工具<br/>订单归属 / 政策与事务校验"]
+    Executor <--> Tools
     Tools --> DB[("MySQL<br/>订单、工单、对话审计")]
     API --> DB
     DB --> Metrics["实时指标 API"]
@@ -27,6 +38,11 @@ flowchart LR
 | 政策检索 | Markdown 分片通过向量与关键词联合排序，综合门槛为 0.65。默认用本地 N-gram 向量和 JSON 缓存，可配置独立的 OpenAI 兼容 Embedding 接口。政策原文仅注入当轮系统消息。 |
 | 请求治理 | Redis Lua 使用服务端时钟，每个用户在滚动 60 秒内最多 15 次，超限返回 429 和 `Retry-After`。提示词护栏命中返回 403，审计只保存规则标记。 |
 | 可观测性 | 每次对话按请求记录首见工具顺序和端到端耗时。MySQL 聚合请求量、会话量、平均延迟和工具排行，统计接口只返回聚合结果。 |
+| 多智能体 | Planner 和 Critic 通过 Spring AI `.entity(...)` 转换 JSON 为 Java Record，并在本地校验必填字段和建单步骤。Executor 仅暴露计划中的工具，按序执行并将实际工具结果交给 Critic。反思最多一次，单独修订答复，原始问题与最终答复按会话写入 Redis。 |
+
+### 简历描述
+
+基于 Spring AI 实现企业客服的 Plan-and-Solve 编排。以结构化计划分流简单请求与多步业务，结合售后政策和实际工具回执进行独立复核，限制单轮工具调用与反思次数，并接入 Redis 会话记忆、MySQL 事务校验和统一审计。
 
 ## Docker Compose 启动
 
@@ -75,11 +91,16 @@ Invoke-RestMethod "$base/api/metrics/summary"
 
 | 请求 | 用途 |
 | --- | --- |
+| `POST /api/chat/multi-agent` | 返回 `plan`、`review`、`reflectionTriggered`、`toolsInvoked`、`totalLatencyMs` 和 `finalReply`。简单任务沿用原链路，`review` 为 `null`。 |
 | `GET /api/health/check` | 验证 MySQL、Redis 和样例订单数据。 |
 | `GET /api/knowledge/search?query=专线宽带已经完成了能退款吗` | 返回政策内容、综合分、文档名和条款编号。 |
 | `POST /api/knowledge/reload` | 重新加载受信任的 Markdown，验证成功后原子切换索引。 |
 | `DELETE /api/chat/memory/resume-demo-01?userId=U1001` | 清空用户会话的 Redis 记忆。 |
 | `GET /api/metrics/summary` | 获取审计请求数、独立会话数、平均延迟和工具分布。 |
+
+用相同的请求体调用 `POST /api/chat/multi-agent`。示例复合请求是 `列出我名下的订单，逐笔核对能否自助退款。对符合条件的订单提交退款申请，原因是项目取消。` 该请求会登记符合条件的待审核工单。仅需演示审查流程时，可以提问 `先列出我名下的订单，再逐笔说明退款条件。`
+
+复杂任务最多执行 32 次业务工具调用。批量判断按当前用户的订单类型与状态提取适用条款，实际建单仍在事务中逐笔校验。反思轮沿用原工具回执，不执行新操作。第二次审查仍驳回时，响应会提示人工核对，并保留实际建单回执。
 
 在 Compose 中，修改 `src/main/resources/docs/after_sales_policy.md` 后可以调用刷新接口。启动时配置 `KNOWLEDGE_RELOAD_TOKEN`，调用时通过 `X-Knowledge-Reload-Token` 传入同一个值。原生应用可设置 `KNOWLEDGE_POLICY_LOCATION=file:...` 指向外部文件，本机直连可使用回环地址调用刷新。
 
@@ -93,6 +114,8 @@ Invoke-RestMethod "$base/api/metrics/summary"
 mvn -B clean verify
 mvn spring-boot:run
 ```
+
+`mvn -B test` 使用模拟模型响应覆盖正常协同、工单号遗漏后的修订和连续驳回，无需在线模型密钥或中间件。
 
 可使用 `MYSQL_USER`、`MYSQL_PASSWORD` 和 `MYSQL_PORT` 连接本机实例。Redis 默认连接 `127.0.0.1:6379`。
 

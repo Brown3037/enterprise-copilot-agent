@@ -1,5 +1,7 @@
 package com.enterprise.copilot.controller;
 
+import com.enterprise.copilot.agent.MultiAgentOrchestratorService;
+import com.enterprise.copilot.agent.dto.MultiAgentResponse;
 import com.enterprise.copilot.common.Result;
 import com.enterprise.copilot.dto.ChatRequest;
 import com.enterprise.copilot.memory.RedisChatMemory;
@@ -27,10 +29,16 @@ public class ChatController {
 
     private final CopilotChatService copilotChatService;
     private final RedisChatMemory memory;
+    private final MultiAgentOrchestratorService multiAgentOrchestratorService;
 
     @PostMapping
     public Result<String> chat(@Valid @RequestBody ChatRequest request) {
         return Result.success(copilotChatService.chatSync(request));
+    }
+
+    @PostMapping("/multi-agent")
+    public Result<MultiAgentResponse> multiAgentChat(@Valid @RequestBody ChatRequest request) {
+        return Result.success(multiAgentOrchestratorService.processWithMultiAgent(request));
     }
 
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
