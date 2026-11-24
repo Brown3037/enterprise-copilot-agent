@@ -10,6 +10,7 @@ import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.text.Normalizer;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -30,6 +31,7 @@ public class KnowledgeBaseService {
     private static final double CONFIDENCE_THRESHOLD = 0.65;
     private static final int VECTOR_TOP_K = 5;
     private static final int RESULT_LIMIT = 2;
+    private static final BigDecimal WORKFLOW_REVIEW_AMOUNT = new BigDecimal("5000.00");
     private static final Pattern ORDER_NUMBER = Pattern.compile("\\bORD-[A-Z0-9][A-Z0-9-]{0,27}\\b",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern QUANTITY = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(天|日|年|小时|GB|%)");
@@ -104,6 +106,16 @@ public class KnowledgeBaseService {
             case DENY -> Optional.of("当前政策不支持该自助申请。依据 " + citation(rule.document().getMetadata())
                     + " " + rule.document().getText());
         };
+    }
+
+    public Optional<String> workflowManualReview(BizOrder order) {
+        if (ProductFamily.forProduct(order.getProductName()) == ProductFamily.DEDICATED) {
+            return Optional.of("企业专线订单需转人工核对。");
+        }
+        if (order.getAmount().compareTo(WORKFLOW_REVIEW_AMOUNT) >= 0) {
+            return Optional.of("订单实付金额达到 5000 元，需转人工核对。");
+        }
+        return Optional.empty();
     }
 
     private static boolean matchesOrder(Rule rule, BizOrder order) {

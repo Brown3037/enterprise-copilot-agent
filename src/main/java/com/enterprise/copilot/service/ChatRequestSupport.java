@@ -37,11 +37,15 @@ public class ChatRequestSupport {
     }
 
     public void check(ChatRequest request) {
-        rateLimiter.acquire(request.getUserId());
-        guardrail.validateInput(request.getMessage());
+        checkInput(request);
         if (!modelConfigured) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "模型 API Key 尚未配置");
         }
+    }
+
+    public void checkInput(ChatRequest request) {
+        rateLimiter.acquire(request.getUserId());
+        guardrail.validateInput(request.getMessage());
     }
 
     public ResponseStatusException modelFailure(Throwable error) {
@@ -61,7 +65,7 @@ public class ChatRequestSupport {
     }
 
     public void audit(ChatRequest request, String reply, String toolsInvoked, long latencyMs,
-                      Throwable failure, boolean multiAgent) {
+                      Throwable failure, String auditPrefix) {
         if (failure instanceof RateLimitExceededException) {
             return;
         }
@@ -69,7 +73,7 @@ public class ChatRequestSupport {
         auditLog.setSessionId(request.getSessionId());
         auditLog.setUserId(request.getUserId());
         auditLog.setUserMessage(failure instanceof RejectedPromptException blocked
-                ? blocked.auditMarker() : (multiAgent ? "[Multi-Agent] " : "") + request.getMessage());
+                ? blocked.auditMarker() : auditPrefix + request.getMessage());
         auditLog.setAssistantReply(reply);
         auditLog.setToolsInvoked(toolsInvoked);
         auditLog.setLatencyMs(latencyMs);

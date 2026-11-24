@@ -40,7 +40,7 @@ public class CopilotChatService {
             failure = error;
             throw requests.modelFailure(error);
         } finally {
-            requests.audit(request, reply, trace.finishAndGetTools(), elapsedMillis(startedAt), failure, false);
+            requests.audit(request, reply, trace.finishAndGetTools(), elapsedMillis(startedAt), failure, "");
         }
     }
 
@@ -94,7 +94,7 @@ public class CopilotChatService {
         if (failure instanceof RateLimitExceededException) {
             return Mono.empty();
         }
-        return Mono.<Void>fromRunnable(() -> requests.audit(request, reply, tools, latencyMs, failure, false))
+        return Mono.<Void>fromRunnable(() -> requests.audit(request, reply, tools, latencyMs, failure, ""))
                 .subscribeOn(Schedulers.boundedElastic());
     }
 

@@ -29,15 +29,30 @@ public class AfterSalesTicketService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public String createTicket(String userId, String orderNo, String ticketType, String reason) {
+        return submit(userId, orderNo, ticketType, reason, false).message();
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public TicketResult createWorkflowTicket(String userId, String orderNo, String ticketType, String reason) {
+        return submit(userId, orderNo, ticketType, reason, true);
+    }
+
+    private TicketResult submit(String userId, String orderNo, String ticketType, String reason, boolean workflow) {
         // Serialize submissions for the same order across instances before reading open tickets.
         BizOrder order = bizOrderMapper.selectOne(Wrappers.<BizOrder>lambdaQuery()
                 .eq(BizOrder::getOrderNo, orderNo)
                 .last("FOR UPDATE"));
         if (order == null || !order.getUserId().equals(userId)) {
-            return "创建工单失败：未找到该订单，或当前用户无权操作该订单。";
+            return TicketResult.rejected("未找到该订单，或当前用户无权操作该订单。");
         }
         if ("REFUND".equals(ticketType) && "REFUNDED".equals(order.getStatus())) {
-            return "创建工单失败：该订单已退款，无需重复申请。";
+            return TicketResult.rejected("该订单已退款，无需重复申请。");
+        }
+        if (workflow) {
+            var manualReview = knowledgeBaseService.workflowManualReview(order);
+            if (manualReview.isPresent()) {
+                return TicketResult.rejected(manualReview.get());
+            }
         }
 
         ServiceTicket existing = serviceTicketMapper.selectOne(Wrappers.<ServiceTicket>lambdaQuery()
@@ -48,14 +63,15 @@ public class AfterSalesTicketService {
                 .last("LIMIT 1"));
         if (existing != null) {
             if (!userId.equals(existing.getUserId())) {
-                return "创建工单失败：该订单有一条待核对工单，请联系人工客服。";
+                return TicketResult.rejected("该订单有一条待核对工单，请联系人工客服。");
             }
-            return "已有处理中的同类型工单，工单号：%s | 当前状态：待审核(OPEN)".formatted(existing.getTicketNo());
+            return new TicketResult(TicketStatus.EXISTING, existing.getTicketNo(),
+                    "已有处理中的同类型工单，工单号：%s | 当前状态：待审核(OPEN)".formatted(existing.getTicketNo()));
         }
 
         var restriction = knowledgeBaseService.ticketRestriction(order, ticketType);
         if (restriction.isPresent()) {
-            return "创建工单失败：" + restriction.get();
+            return TicketResult.rejected(restriction.get());
         }
 
         ServiceTicket ticket = new ServiceTicket();
@@ -65,8 +81,17 @@ public class AfterSalesTicketService {
         ticket.setReason(reason);
         ticket.setStatus("OPEN");
         insertWithUniqueNumber(ticket);
-        return "售后工单已创建，工单号：%s | 关联订单：%s | 工单类型：%s | 当前状态：待审核(OPEN)".formatted(
-                ticket.getTicketNo(), order.getOrderNo(), ticketType);
+        return new TicketResult(TicketStatus.CREATED, ticket.getTicketNo(),
+                "售后工单已创建，工单号：%s | 关联订单：%s | 工单类型：%s | 当前状态：待审核(OPEN)".formatted(
+                        ticket.getTicketNo(), order.getOrderNo(), ticketType));
+    }
+
+    public enum TicketStatus { CREATED, EXISTING, REJECTED }
+
+    public record TicketResult(TicketStatus status, String ticketNo, String message) {
+        private static TicketResult rejected(String reason) {
+            return new TicketResult(TicketStatus.REJECTED, null, "创建工单失败：" + reason);
+        }
     }
 
     private void insertWithUniqueNumber(ServiceTicket ticket) {

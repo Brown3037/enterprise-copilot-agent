@@ -56,10 +56,7 @@ public class CustomerServiceTools {
         if (userId == null) {
             return MISSING_USER;
         }
-        List<BizOrder> orders = bizOrderMapper.selectList(Wrappers.<BizOrder>lambdaQuery()
-                        .eq(BizOrder::getUserId, userId)
-                        .orderByDesc(BizOrder::getCreateTime, BizOrder::getId))
-                .stream().filter(order -> userId.equals(order.getUserId())).toList();
+        List<BizOrder> orders = listOwnedOrders(userId);
         if (orders.isEmpty()) {
             return "当前用户暂无订单。";
         }
@@ -67,6 +64,13 @@ public class CustomerServiceTools {
                 .map(order -> "- 订单号：%s | 商品：%s | 实付金额：¥%s | 状态：%s".formatted(
                         order.getOrderNo(), order.getProductName(), order.getAmount(), orderStatus(order.getStatus())))
                 .collect(Collectors.joining("\n", "共 " + orders.size() + " 笔订单：\n", ""));
+    }
+
+    public List<BizOrder> listOwnedOrders(String userId) {
+        return bizOrderMapper.selectList(Wrappers.<BizOrder>lambdaQuery()
+                        .eq(BizOrder::getUserId, userId)
+                        .orderByDesc(BizOrder::getCreateTime, BizOrder::getId))
+                .stream().filter(order -> userId.equals(order.getUserId())).toList();
     }
 
     @Tool(description = "根据工单编号查询当前用户名下的售后工单和处理状态")

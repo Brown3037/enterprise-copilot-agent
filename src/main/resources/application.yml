@@ -39,6 +39,10 @@ mybatis-plus:
       id-type: auto
 
 copilot:
+  langgraph:
+    base-url: ${LANGGRAPH_BASE_URL:http://127.0.0.1:8090}
+    token: ${COPILOT_LANGGRAPH_TOKEN:}
+    read-timeout: ${LANGGRAPH_READ_TIMEOUT:45s}
   knowledge:
     policy: ${KNOWLEDGE_POLICY_LOCATION:classpath:docs/after_sales_policy.md}
     cache-directory: ${KNOWLEDGE_CACHE_DIRECTORY:./.rag-cache}

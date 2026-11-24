@@ -36,3 +36,8 @@ replay_pid*
 
 # Local knowledge index
 /.rag-cache/
+
+# Python environments and caches
+__pycache__/
+.pytest_cache/
+.venv/

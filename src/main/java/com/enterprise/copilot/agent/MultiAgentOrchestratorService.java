@@ -55,7 +55,7 @@ public class MultiAgentOrchestratorService {
             failure = error;
             throw requests.modelFailure(error);
         } finally {
-            requests.audit(request, reply, trace.finishAndGetTools(), elapsedMillis(startedAt), failure, true);
+            requests.audit(request, reply, trace.finishAndGetTools(), elapsedMillis(startedAt), failure, "[Multi-Agent] ");
         }
     }
 

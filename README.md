@@ -1,6 +1,6 @@
 # Enterprise Copilot Agent
 
-一个面向企业客服的 Java 21 / Spring Boot 3.4 后端。支持查询订单、按售后政策登记工单、SSE 流式对话和多智能体业务编排。MySQL 保存业务与审计数据，Redis 保存跨实例会话记忆和请求限流状态。
+一个面向企业客服的 Java 21 / Spring Boot 3.4 后端。支持查询订单、按售后政策登记工单、SSE 流式对话、Java 多智能体编排和 Python LangGraph 工作流。MySQL 保存业务与审计数据，Redis 保存跨实例会话记忆和请求限流状态。
 
 ## 架构
 
@@ -10,6 +10,10 @@ flowchart LR
     API --> Guard["请求校验<br/>Redis + Lua 限流 / 提示词护栏"]
     Guard -->|同步 / SSE| Agent["现有对话链路<br/>Spring AI ChatClient"]
     Guard -->|multi-agent| Planner["Planner<br/>意图分流 / JSON 计划"]
+    Guard -->|langgraph| Bridge["Java 工作流网关<br/>政策依据 / HTTP / 审计"]
+    Bridge --> Graph["Python FastAPI<br/>LangGraph 条件路由"]
+    Graph -->|HTTP 回调| Internal["Java 内部订单和工单接口"]
+    Internal --> Tools
     Planner -->|简单请求| Agent
     Planner -->|复杂任务| Executor["Executor<br/>按计划执行"]
     Agent --> RAG["售后政策检索<br/>向量、关键词与订单规则"]
@@ -39,6 +43,7 @@ flowchart LR
 | 请求治理 | Redis Lua 使用服务端时钟，每个用户在滚动 60 秒内最多 15 次，超限返回 429 和 `Retry-After`。提示词护栏命中返回 403，审计只保存规则标记。 |
 | 可观测性 | 每次对话按请求记录首见工具顺序和端到端耗时。MySQL 聚合请求量、会话量、平均延迟和工具排行，统计接口只返回聚合结果。 |
 | 多智能体 | Planner 和 Critic 通过 Spring AI `.entity(...)` 转换 JSON 为 Java Record，并在本地校验必填字段和建单步骤。Executor 仅暴露计划中的工具，按序执行并将实际工具结果交给 Critic。反思最多一次，单独修订答复，原始问题与最终答复按会话写入 Redis。 |
+| 跨语言工作流 | Java 完成限流、输入校验、政策检索和审计。Python 用 LangGraph 条件边处理建单、人工核对与咨询，通过具备服务间鉴权的 Java HTTP 接口读取订单和登记工单。 |
 
 ### 简历描述
 
@@ -101,6 +106,36 @@ Invoke-RestMethod "$base/api/metrics/summary"
 用相同的请求体调用 `POST /api/chat/multi-agent`。示例复合请求是 `列出我名下的订单，逐笔核对能否自助退款。对符合条件的订单提交退款申请，原因是项目取消。` 该请求会登记符合条件的待审核工单。仅需演示审查流程时，可以提问 `先列出我名下的订单，再逐笔说明退款条件。`
 
 复杂任务最多执行 32 次业务工具调用。批量判断按当前用户的订单类型与状态提取适用条款，实际建单仍在事务中逐笔校验。反思轮沿用原工具回执，不执行新操作。第二次审查仍驳回时，响应会提示人工核对，并保留实际建单回执。
+
+## Java 与 Python 工作流联调
+
+`POST /api/chat/langgraph` 接收和普通聊天相同的请求体。Java 将售后政策转发给 Python，Python 的 LangGraph 执行 `fetch_orders → analyze_policy`，再沿条件边进入事务建单、人工核对或咨询答复，返回 `route_taken`、`node_trace`、`final_reply` 和可选的 `human_review`。审计记录包含 `LangGraph:AUTO_TICKET`、`LangGraph:HUMAN_ESCALATION` 或 `LangGraph:INFO_ONLY`。
+
+1. 准备正在运行的 MySQL 和 Redis。为本地联调生成随机字符串，在 Java 与 Python 两个终端分别设置相同的 `COPILOT_LANGGRAPH_TOKEN`。
+2. 在仓库根目录用 JDK 21 运行 `mvn spring-boot:run`。Java 默认监听 `127.0.0.1:8080`，通过 `LANGGRAPH_BASE_URL` 指向 Python。
+3. 在另一个终端进入 `python-langgraph-service`，以 Python 3.12 创建独立环境并启动服务。
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pytest -v
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8090
+```
+
+Python 默认使用 `LANGGRAPH_MODE=mock`，可在没有模型密钥时联调真实 Java 业务回调。需要模型推理时，在 Python 终端设置 `LANGGRAPH_MODE=live` 和 `DEEPSEEK_API_KEY`。若 Java 改用其他端口，同时在 Python 终端设置 `JAVA_COPILOT_URL`。两个服务互访时发送 Bearer 凭据，Python 的 `GET /health` 可直接检查服务状态。
+
+用示例用户 `U1001` 运行下列命令会为待发货云服务器登记退款工单，重复提交返回原待审核工单号。
+
+```powershell
+$body = @{
+    sessionId = 'langgraph-demo-01'
+    userId = 'U1001'
+    message = '请为订单 ORD-2026001 申请退款，原因是项目取消。'
+} | ConvertTo-Json -Compress
+Invoke-RestMethod 'http://127.0.0.1:8080/api/chat/langgraph' -Method Post -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
+```
+
+自动建单入口识别包含单个订单编号、明确申请类型和原因的请求。专线订单、实付金额达到 5000 元的订单、政策依据不足和 Java 拒绝的申请都会生成 `DRAFT` 人工交接草稿。草稿作为接口返回内容，用户可交给人工客服核对。订单归属、金额、政策和重复待审核工单在 Java 写入事务内复核。
 
 在 Compose 中，修改 `src/main/resources/docs/after_sales_policy.md` 后可以调用刷新接口。启动时配置 `KNOWLEDGE_RELOAD_TOKEN`，调用时通过 `X-Knowledge-Reload-Token` 传入同一个值。原生应用可设置 `KNOWLEDGE_POLICY_LOCATION=file:...` 指向外部文件，本机直连可使用回环地址调用刷新。
 

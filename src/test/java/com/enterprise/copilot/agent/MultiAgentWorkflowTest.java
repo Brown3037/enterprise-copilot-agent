@@ -17,6 +17,7 @@ import com.enterprise.copilot.service.AfterSalesTicketService;
 import com.enterprise.copilot.service.ChatRequestSupport;
 import com.enterprise.copilot.service.CopilotChatService;
 import com.enterprise.copilot.service.KnowledgeBaseService;
+import com.enterprise.copilot.service.LangGraphBridgeService;
 import com.enterprise.copilot.tools.CustomerServiceTools;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -89,7 +90,8 @@ class MultiAgentWorkflowTest {
         var customerTools = new CustomerServiceTools(orders, tickets, new AfterSalesTicketService(orders, tickets, knowledge));
         var orchestrator = new MultiAgentOrchestratorService(new PlannerAgent(model),
                 new ExecutorAgent(model, customerTools, json), new CriticAgent(model), chat, knowledge, memory, requests);
-        mvc = MockMvcBuilders.standaloneSetup(new ChatController(chat, memory, orchestrator))
+        mvc = MockMvcBuilders.standaloneSetup(new ChatController(chat, memory, orchestrator,
+                        mock(LangGraphBridgeService.class)))
                 .setControllerAdvice(new GlobalExceptionHandler()).build();
 
         when(memory.openTurn("U1001:phase7")).thenReturn(turn);
