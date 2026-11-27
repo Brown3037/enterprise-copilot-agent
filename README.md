@@ -1,6 +1,8 @@
 # Enterprise Copilot Agent
 
-一个面向企业客服的 Java 21 / Spring Boot 3.4 后端。支持查询订单、按售后政策登记工单、SSE 流式对话、Java 多智能体编排和 Python LangGraph 工作流。MySQL 保存业务与审计数据，Redis 保存跨实例会话记忆和请求限流状态。
+Enterprise Copilot Agent 是一套提供浏览器工作台的企业客服系统。用户可以查询订单、核对售后政策、登记待审核工单，或生成人工交接草稿。工作台支持 SSE 流式对话、Java 多智能体和 Python LangGraph 三种模式，并展示执行计划、审查结果和工作流轨迹。
+
+Java 端基于 Java 21、Spring Boot 3.4 和 Spring AI 接入 DeepSeek，由 Planner、Executor 和 Critic 完成任务规划、工具调用和结果复核。Python 端使用 FastAPI 和 LangGraph 按售后规则分流，经鉴权的 HTTP 接口回调 Java 查单和事务建单。RAG 提供售后政策依据，MySQL 保存订单、工单和审计记录，Redis 管理跨实例的会话记忆与请求限流。
 
 ## 架构
 
