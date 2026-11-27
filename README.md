@@ -71,6 +71,8 @@ Invoke-RestMethod http://127.0.0.1:8080/api/health/check
 
 ## API 示例
 
+启动 Java 服务后，访问 http://127.0.0.1:8080/ 打开客服工作台。可以切换演示用户，在流式对话、多智能体和 LangGraph 模式之间切换，并查看每轮的执行轨迹。会话列表保存在当前浏览器中。
+
 下面的请求体适用于 `POST /api/chat` 和 `POST /api/chat/stream`。
 
 ```json
